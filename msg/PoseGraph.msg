@@ -1,0 +1,2 @@
+GraphNode[] nodes
+GraphEdge[] edges
