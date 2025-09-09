@@ -25,6 +25,10 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(lifecycle_msgs REQUIRED)
+find_package(bondcpp REQUIRED)
+find_package(bond REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_default_plugins REQUIRED)
 find_package(rviz_ogre_vendor REQUIRED)
@@ -32,6 +36,8 @@ find_package(rviz_rendering REQUIRED)
 find_package(interactive_markers REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Test Concurrent)
 find_package(rclcpp_components REQUIRED)
+find_package(geometry_msgs REQUIRED)
+
 
 #karto_sdk lib
 set(BUILD_SHARED_LIBS ON)
@@ -53,6 +59,10 @@ set(dependencies
   std_msgs
   std_srvs
   builtin_interfaces
+  rclcpp_lifecycle
+  bondcpp
+  bond
+  lifecycle_msgs
   rviz_common
   rviz_default_plugins
   rviz_ogre_vendor
@@ -106,6 +116,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   srv/AddSubmap.srv
   srv/DeserializePoseGraph.srv
   srv/SerializePoseGraph.srv
+  msg/GraphNode.msg
+  msg/GraphEdge.msg
+  msg/PoseGraph.msg
+  msg/LoopClosureEvent.msg
+
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs nav_msgs visualization_msgs
 )
 
@@ -126,7 +141,7 @@ rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typ
 target_link_libraries(SlamToolboxPlugin "${cpp_typesupport_target}")
 target_compile_definitions(SlamToolboxPlugin PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
 target_compile_definitions(SlamToolboxPlugin PRIVATE "RVIZ_DEFAULT_PLUGINS_BUILDING_LIBRARY")
-pluginlib_export_plugin_description_file(rviz_common rviz_plugins.xml) 
+pluginlib_export_plugin_description_file(rviz_common rviz_plugins.xml)
 
 #### Ceres Plugin
 add_library(ceres_solver_plugin solvers/ceres_solver.cpp)
@@ -200,6 +215,7 @@ install(TARGETS async_slam_toolbox_node
                 sync_slam_toolbox_node
                 localization_slam_toolbox_node
                 map_and_localization_slam_toolbox_node
+                lifelong_slam_toolbox_node
                 merge_maps_kinematic
                 ${libraries}
                 kartoSlamToolbox
@@ -235,6 +251,6 @@ install(FILES solver_plugins.xml rviz_plugins.xml
 
 ament_export_include_directories(include)
 ament_export_libraries(${libraries} kartoSlamToolbox)
-ament_export_dependencies(${dependencies})
+ament_export_dependencies(${dependencies} rosidl_default_runtime)
 ament_export_targets(SlamToolboxPlugin HAS_LIBRARY_TARGET)
 ament_package()
