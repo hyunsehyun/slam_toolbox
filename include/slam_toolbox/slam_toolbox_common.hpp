@@ -52,10 +52,12 @@
 #include "slam_toolbox/laser_utils.hpp"
 #include "slam_toolbox/get_pose_helper.hpp"
 #include "slam_toolbox/map_saver.hpp"
-#include "slam_toolbox/loop_closure_assistant.hpp"
+#include "slam_toolbox/loop_closure_assistant.hpp" 
 #include "slam_toolbox/msg/pose_graph.hpp"
 #include "slam_toolbox/msg/graph_node.hpp"
 #include "slam_toolbox/msg/graph_edge.hpp"
+#include "slam_toolbox/msg/new_node_event.hpp"
+
 
 namespace slam_toolbox
 {
@@ -137,6 +139,7 @@ protected:
     const Matrix3 & cov,
     const rclcpp::Time & t);
   void publishPoseGraph();
+  void publishNewNodeEvent(const karto::LocalizedRangeScan* lrs);
 
 
   // pausing bits
@@ -157,7 +160,11 @@ protected:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::MapMetaData>> sstm_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<
       geometry_msgs::msg::PoseWithCovarianceStamped>> pose_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<slam_toolbox::msg::PoseGraph>> pose_graph_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<
+      slam_toolbox::msg::PoseGraph>> pose_graph_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<
+      slam_toolbox::msg::NewNodeEvent>> new_node_event_pub_;
+
 
   std::shared_ptr<rclcpp::Service<nav_msgs::srv::GetMap>> ssMap_;
   std::shared_ptr<rclcpp::Service<slam_toolbox::srv::Pause>> ssPauseMeasurements_;
