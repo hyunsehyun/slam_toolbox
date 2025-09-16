@@ -25,6 +25,8 @@
 #include "slam_toolbox/msg/pose_graph.hpp"
 #include "slam_toolbox/msg/graph_node.hpp"
 #include "slam_toolbox/msg/graph_edge.hpp"
+#include "slam_toolbox/loop_closure_assistant.hpp"
+#include "slam_toolbox/msg/new_node_event.hpp"
 
 namespace slam_toolbox
 {
@@ -149,6 +151,8 @@ CallbackReturn SlamToolbox::on_activate(const rclcpp_lifecycle::State &)
   sstm_->on_activate();
   pose_pub_->on_activate();
   pose_graph_pub_->on_activate();
+  new_node_event_pub_->on_activate();
+
   closure_assistant_ =
     std::make_unique<loop_closure_assistant::LoopClosureAssistant>(
     shared_from_this(), smapper_->getMapper(), scan_holder_.get(),
@@ -190,6 +194,7 @@ CallbackReturn SlamToolbox::on_deactivate(const rclcpp_lifecycle::State &)
   sstm_->on_deactivate();
   pose_pub_->on_deactivate();
   pose_graph_pub_->on_deactivate();
+  new_node_event_pub_->on_deactivate();
 
   // reset interfaces
   scan_filter_.reset();
@@ -455,6 +460,8 @@ void SlamToolbox::setROSInterfaces()
   pose_graph_pub_ = this->create_publisher<slam_toolbox::msg::PoseGraph>(
     "slam_toolbox/pose_graph",
     rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+  new_node_event_pub_ = this->create_publisher<slam_toolbox::msg::NewNodeEvent>(
+  "slam_toolbox/new_node_event", 10);
   scan_filter_sub_ =
     std::make_unique<message_filters::Subscriber<sensor_msgs::msg::LaserScan,
       rclcpp_lifecycle::LifecycleNode>>(
@@ -850,10 +857,10 @@ LocalizedRangeScan * SlamToolbox::addScan(
     }
     publishPoseGraph();
 
-
     setTransformFromPoses(range_scan->GetCorrectedPose(), odom_pose,
       scan->header.stamp, update_reprocessing_transform);
     dataset_->Add(range_scan);
+    publishNewNodeEvent(range_scan);
 
     publishPose(range_scan->GetCorrectedPose(), covariance, scan->header.stamp);
   } else {
@@ -893,42 +900,12 @@ void SlamToolbox::publishPose(
 void SlamToolbox::publishPoseGraph()
 /*****************************************************************************/
 {
-  if (!pose_graph_pub_) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-      "pose_graph_pub_ is null; skip publishing.");
-    return;
-  }
-#if RCLCPP_VERSION_MAJOR >= 2
-  // 일부 ROS2 버전에선 is_activated() 미구현일 수 있음 → 컴파일 안 되면 이 블록은 제거
-  if (!pose_graph_pub_->is_activated()) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-      "pose_graph publisher is not activated; skip publishing.");
-    return;
-  }
-#endif
-
-  if (!smapper_) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-      "smapper_ is null; skip publishing.");
-    return;
-  }
-  auto * mapper = smapper_->getMapper();
-  if (!mapper) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-      "smapper_->getMapper() is null; skip publishing.");
-    return;
-  }
-  auto * graph = mapper->GetGraph();
-  if (!graph) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-      "mapper->GetGraph() is null; skip publishing.");
-    return;
-  }
+  auto * graph = smapper_->getMapper()->GetGraph();
+  if (!graph) return;
 
   slam_toolbox::msg::PoseGraph msg;
-
-  try {
-    VerticeMap mapper_vertices = graph->GetVertices();
+ 
+  VerticeMap mapper_vertices = graph->GetVertices();
     for (auto vertex_map_it = mapper_vertices.begin();
          vertex_map_it != mapper_vertices.end(); ++vertex_map_it)
     {
@@ -941,25 +918,15 @@ void SlamToolbox::publishPoseGraph()
 
         slam_toolbox::msg::GraphNode node_msg;
         node_msg.node_id = lrs->GetUniqueId();
-        node_msg.stamp = rclcpp::Time(lrs->GetTime());
         node_msg.pose.x = lrs->GetCorrectedPose().GetX();
         node_msg.pose.y = lrs->GetCorrectedPose().GetY();
         node_msg.pose.theta = lrs->GetCorrectedPose().GetHeading();
         msg.nodes.push_back(node_msg);
       }
     }
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 3000,
-      "publishPoseGraph(): exception while filling nodes: %s", e.what());
-    return;  
-  } catch (...) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 3000,
-      "publishPoseGraph(): unknown exception while filling nodes");
-    return;
-  }
 
-  try {
-    EdgeVector mapper_edges = graph->GetEdges();
+  
+  EdgeVector mapper_edges = graph->GetEdges();
     for (auto edges_it = mapper_edges.begin();
          edges_it != mapper_edges.end(); ++edges_it)
     {
@@ -969,30 +936,23 @@ void SlamToolbox::publishPoseGraph()
       auto * src = (*edges_it)->GetSource();
       auto * dst = (*edges_it)->GetTarget();
       if (!src || !dst || !src->GetObject() || !dst->GetObject()) {
-        continue; // 불완전 엣지 스킵
+        continue; 
       }
       edge_msg.source_id = src->GetObject()->GetUniqueId();
       edge_msg.target_id = dst->GetObject()->GetUniqueId();
 
-      // EdgeLabel 은 베이스, 실제 데이터는 LinkInfo 에 있음
       karto::EdgeLabel * base_label = (*edges_it)->GetLabel();
       if (!base_label) { continue; }
       auto * link_info = dynamic_cast<karto::LinkInfo *>(base_label);
       if (!link_info) {
-        // LinkInfo 가 아니면 스킵 (타 라벨 타입 안전 처리)
         continue;
       }
 
-      // 상대 포즈: (x, y, theta)
-      // Mapper.h 기준으로 LinkInfo는 보통 Pose difference 를 제공합니다.
-      // GetPoseDifference() 또는 GetPose2()⊖GetPose1() 등 구현에 맞춰 사용
       karto::Pose2 rel_pose = link_info->GetPoseDifference();
       edge_msg.relative_pose.x = rel_pose.GetX();
       edge_msg.relative_pose.y = rel_pose.GetY();
       edge_msg.relative_pose.theta = rel_pose.GetHeading();
 
-      // 정보 행렬: 2D → 3×3. msg 는 float64[9] 로 정의했다고 가정.
-      // covariance 의 역행렬이 information matrix.
       karto::Matrix3 cov = link_info->GetCovariance();
       karto::Matrix3 info = cov.Inverse();
       for (int r = 0; r < 3; ++r) {
@@ -1003,29 +963,27 @@ void SlamToolbox::publishPoseGraph()
 
       msg.edges.push_back(edge_msg);
     }
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 3000,
-      "publishPoseGraph(): exception while filling edges: %s", e.what());
-    return;
-  } catch (...) {
-    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 3000,
-      "publishPoseGraph(): unknown exception while filling edges");
-    return;
-  }
-
-  // 4) 비어있으면 발행 생략 (옵션)
-  if (msg.nodes.empty() && msg.edges.empty()) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-      "pose_graph is empty; skip publishing.");
+  
+  
+  pose_graph_pub_->publish(msg);
+  
+}
+/*****************************************************************************/
+void SlamToolbox::publishNewNodeEvent(const karto::LocalizedRangeScan* lrs)
+/*****************************************************************************/
+{
+  if (!new_node_event_pub_ || lrs == nullptr) {
     return;
   }
 
-  // 5) 퍼블리시 (예외 보호)
-  try {
-    pose_graph_pub_->publish(msg);
-  } catch (const std::exception & e) {
-    RCLCPP_ERROR(get_logger(), "pose_graph publish failed: %s", e.what());
-  }
+  slam_toolbox::msg::NewNodeEvent ev;
+  ev.stamp = scan_header.stamp;  
+  ev.new_node_id = lrs->GetUniqueId();
+  ev.pose.x = lrs->GetCorrectedPose().GetX();
+  ev.pose.y = lrs->GetCorrectedPose().GetY();
+  ev.pose.theta = lrs->GetCorrectedPose().GetHeading();
+
+  new_node_event_pub_->publish(ev);
 }
 
 /*****************************************************************************/
